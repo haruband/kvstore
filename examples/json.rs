@@ -9,18 +9,6 @@ pub struct JsonValue {
     pub score: usize,
 }
 
-impl From<Vec<u8>> for JsonValue {
-    fn from(v: Vec<u8>) -> Self {
-        serde_json::from_slice(&v).unwrap()
-    }
-}
-
-impl Into<Vec<u8>> for JsonValue {
-    fn into(self) -> Vec<u8> {
-        serde_json::to_string(&self).unwrap().into()
-    }
-}
-
 #[derive(Debug, Args)]
 struct DSOption {
     #[arg(long, help = "Store path")]
@@ -48,7 +36,7 @@ async fn main() -> Result<(), Error> {
     for group in 0..groups {
         for item in 0..items {
             store
-                .set(
+                .set_json(
                     &format!("json/group{}/item{}", group, item),
                     JsonValue {
                         name: format!("item{}", item),
@@ -59,8 +47,10 @@ async fn main() -> Result<(), Error> {
         }
     }
 
-    let items = store.get_many::<JsonValue>(Some("json")).await?;
-    println!("items={:#?}", items);
+    let values = store
+        .get_json_many::<JsonValue>(Some("json/group0"))
+        .await?;
+    println!("values={:#?}", values);
 
     Ok(())
 }

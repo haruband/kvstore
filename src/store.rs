@@ -6,10 +6,6 @@ use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::{ClientOptions, GetResultPayload, ObjectStore, PutPayload};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-use parquet::arrow::AsyncArrowWriter;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use url::Url;
@@ -62,7 +58,7 @@ impl KVStore {
         Ok(())
     }
 
-    pub async fn get<T: From<Vec<u8>>>(&self, key: &str) -> Result<Option<T>, Error> {
+    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         match self
             .store
             .get(&Path::from(self.url.join(key)?.path()))
@@ -71,12 +67,12 @@ impl KVStore {
             Ok(result) => match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
-                    Ok(Some(value.to_vec().into()))
+                    Ok(Some(value.to_vec()))
                 }
                 GetResultPayload::File(mut file, _) => {
                     let mut value = Vec::new();
                     file.read_to_end(&mut value)?;
-                    Ok(Some(value.into()))
+                    Ok(Some(value))
                 }
             },
             Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -84,10 +80,7 @@ impl KVStore {
         }
     }
 
-    pub async fn get_many<T: Send + 'static + From<Vec<u8>>>(
-        &self,
-        key: Option<&str>,
-    ) -> Result<HashMap<String, T>, Error> {
+    pub async fn get_many(&self, key: Option<&str>) -> Result<Vec<Vec<u8>>, Error> {
         let url = match key {
             Some(key) => self.url.join(key)?,
             None => self.url.clone(),
@@ -105,15 +98,12 @@ impl KVStore {
                         Ok(result) => match result.payload {
                             GetResultPayload::Stream(_) => {
                                 let value = result.bytes().await?;
-                                Ok::<(String, T), Error>((
-                                    object.location.to_string(),
-                                    value.to_vec().into(),
-                                ))
+                                Ok::<Vec<u8>, Error>(value.to_vec())
                             }
                             GetResultPayload::File(mut file, _) => {
                                 let mut value = Vec::new();
                                 file.read_to_end(&mut value)?;
-                                Ok((object.location.to_string(), value.into()))
+                                Ok(value)
                             }
                         },
                         Err(err) => Err(err.into()),
@@ -127,7 +117,7 @@ impl KVStore {
             .try_collect::<Vec<_>>()
             .await?;
 
-        Ok(items.into_iter().collect())
+        Ok(items)
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
@@ -158,9 +148,93 @@ impl KVStore {
     }
 }
 
+#[cfg(feature = "json")]
+impl KVStore {
+    pub async fn set_json<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), Error> {
+        self.store
+            .put(
+                &Path::from(self.url.join(key)?.path()),
+                PutPayload::from(serde_json::to_string(&value)?),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, Error> {
+        match self
+            .store
+            .get(&Path::from(self.url.join(key)?.path()))
+            .await
+        {
+            Ok(result) => match result.payload {
+                GetResultPayload::Stream(_) => {
+                    let value = result.bytes().await?;
+                    Ok(Some(serde_json::from_slice(&value)?))
+                }
+                GetResultPayload::File(mut file, _) => {
+                    let mut value = Vec::new();
+                    file.read_to_end(&mut value)?;
+                    Ok(Some(serde_json::from_slice(&value)?))
+                }
+            },
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn get_json_many<T: Send + 'static + serde::de::DeserializeOwned>(
+        &self,
+        key: Option<&str>,
+    ) -> Result<Vec<T>, Error> {
+        let url = match key {
+            Some(key) => self.url.join(key)?,
+            None => self.url.clone(),
+        };
+
+        let items = self
+            .store
+            .list(Some(&Path::from(url.path())))
+            .map(|object| async {
+                let object = object?;
+                let store = self.store.clone();
+
+                tokio::task::spawn(async move {
+                    match store.get(&object.location).await {
+                        Ok(result) => match result.payload {
+                            GetResultPayload::Stream(_) => {
+                                let value = result.bytes().await?;
+                                Ok::<T, Error>(serde_json::from_slice(&value)?)
+                            }
+                            GetResultPayload::File(mut file, _) => {
+                                let mut value = Vec::new();
+                                file.read_to_end(&mut value)?;
+                                Ok(serde_json::from_slice(&value)?)
+                            }
+                        },
+                        Err(err) => Err(err.into()),
+                    }
+                })
+                .await
+                .unwrap()
+            })
+            .boxed()
+            .buffer_unordered(num_cpus::get())
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(items)
+    }
+}
+
 #[cfg(feature = "parquet")]
 impl KVStore {
     pub async fn set_parquet(&self, key: &str, batches: Vec<RecordBatch>) -> Result<(), Error> {
+        use parquet::arrow::AsyncArrowWriter;
+
         let mut buffer = Vec::new();
         let mut writer =
             AsyncArrowWriter::try_new(&mut buffer, batches.first().unwrap().schema(), None)
@@ -181,6 +255,9 @@ impl KVStore {
     }
 
     pub async fn get_parquet(&self, key: &str) -> Result<Option<Vec<RecordBatch>>, Error> {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+        use parquet::arrow::ParquetRecordBatchStreamBuilder;
+
         match self
             .store
             .get(&Path::from(self.url.join(key)?.path()))

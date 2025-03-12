@@ -25,22 +25,21 @@ async fn main() -> Result<(), Error> {
     let items = store.list(Some("simple")).await?;
     println!("items={:#?}", items);
 
-    let items = store.get_many::<Vec<u8>>(Some("simple")).await?;
+    let items = store.get_many(Some("simple")).await?;
     println!(
         "items={:#?}",
         items
             .iter()
-            .map(|(_, item)| String::from_utf8(item.clone()).unwrap())
+            .map(|item| String::from_utf8(item.clone()).unwrap())
             .collect::<Vec<_>>()
     );
 
     store.rename("simple/korea", "simple/russia").await?;
 
-    let value = store.get::<Vec<u8>>("simple/russia").await?;
-
+    let item = store.get("simple/russia").await?;
     println!(
-        "value={:?}",
-        value.map(|value| String::from_utf8(value).unwrap())
+        "item={:?}",
+        item.map(|item| String::from_utf8(item).unwrap())
     );
 
     Ok(())
