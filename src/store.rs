@@ -1,10 +1,14 @@
 use anyhow::{anyhow, Error};
+use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::{ClientOptions, GetResultPayload, ObjectStore, PutPayload};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+use parquet::arrow::AsyncArrowWriter;
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -140,5 +144,54 @@ impl KVStore {
             .buffer_unordered(num_cpus::get())
             .try_collect::<Vec<_>>()
             .await?)
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl KVStore {
+    pub async fn set_parquet(&self, key: &str, batches: Vec<RecordBatch>) -> Result<(), Error> {
+        let mut buffer = Vec::new();
+        let mut writer =
+            AsyncArrowWriter::try_new(&mut buffer, batches.first().unwrap().schema(), None)
+                .unwrap();
+        for batch in batches {
+            writer.write(&batch).await.unwrap();
+        }
+        writer.close().await.unwrap();
+
+        self.store
+            .put(
+                &Path::from(self.url.join(key)?.path()),
+                PutPayload::from(buffer),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_parquet(&self, key: &str) -> Result<Option<Vec<RecordBatch>>, Error> {
+        match self
+            .store
+            .get(&Path::from(self.url.join(key)?.path()))
+            .await
+        {
+            Ok(result) => match result.payload {
+                GetResultPayload::Stream(_) => {
+                    let stream = ParquetRecordBatchReader::try_new(result.bytes().await?, 1024)?;
+                    let batches = stream.flatten().collect::<Vec<_>>();
+                    Ok(Some(batches))
+                }
+                GetResultPayload::File(file, _) => {
+                    let builder =
+                        ParquetRecordBatchStreamBuilder::new(tokio::fs::File::from_std(file))
+                            .await?;
+                    let stream = builder.build()?;
+                    let batches = stream.try_collect::<Vec<_>>().await?;
+                    Ok(Some(batches))
+                }
+            },
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 }
