@@ -93,7 +93,7 @@ impl KVStore {
         }
     }
 
-    pub async fn get_many<T: From<Vec<u8>>>(
+    pub async fn get_many<T: Send + 'static + From<Vec<u8>>>(
         &self,
         key: Option<&str>,
     ) -> Result<HashMap<String, T>, Error> {
@@ -107,33 +107,29 @@ impl KVStore {
             self.prefix.iter().map(|item| item.as_str()).collect()
         };
 
-        let keys = self
+        let items = self
             .store
             .list(Some(&Path::from_iter(parts)))
-            .try_collect::<Vec<_>>()
-            .await?
-            .into_iter()
-            .map(|object| object.location.to_string())
-            .collect::<Vec<_>>();
-
-        let values = futures::stream::iter(keys.clone())
-            .map(|key| async {
+            .map(|object| async {
+                let object = object?;
                 let store = self.store.clone();
 
                 tokio::task::spawn(async move {
-                    match store.get(&Path::from(key)).await {
+                    match store.get(&object.location).await {
                         Ok(result) => match result.payload {
                             GetResultPayload::Stream(_) => {
                                 let value = result.bytes().await?;
-                                Ok::<Option<Vec<u8>>, Error>(Some(value.to_vec()))
+                                Ok::<(String, T), Error>((
+                                    object.location.to_string(),
+                                    value.to_vec().into(),
+                                ))
                             }
                             GetResultPayload::File(mut file, _) => {
                                 let mut value = Vec::new();
                                 file.read_to_end(&mut value)?;
-                                Ok(Some(value))
+                                Ok((object.location.to_string(), value.into()))
                             }
                         },
-                        Err(object_store::Error::NotFound { .. }) => Ok(None),
                         Err(err) => Err(err.into()),
                     }
                 })
@@ -145,18 +141,7 @@ impl KVStore {
             .try_collect::<Vec<_>>()
             .await?;
 
-        let mut items = HashMap::new();
-
-        for (key, value) in keys.into_iter().zip(values.into_iter()) {
-            match value {
-                Some(value) => {
-                    items.insert(key.into(), value.into());
-                }
-                None => {}
-            }
-        }
-
-        Ok(items)
+        Ok(items.into_iter().collect())
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
@@ -173,10 +158,10 @@ impl KVStore {
         Ok(self
             .store
             .list(Some(&Path::from_iter(parts)))
+            .map(|object| async { Ok::<String, Error>(object?.location.to_string()) })
+            .boxed()
+            .buffer_unordered(num_cpus::get())
             .try_collect::<Vec<_>>()
-            .await?
-            .into_iter()
-            .map(|object| object.location.to_string())
-            .collect())
+            .await?)
     }
 }
