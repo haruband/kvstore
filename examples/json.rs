@@ -15,6 +15,12 @@ impl From<Vec<u8>> for JsonValue {
     }
 }
 
+impl Into<Vec<u8>> for JsonValue {
+    fn into(self) -> Vec<u8> {
+        serde_json::to_string(&self).unwrap().into()
+    }
+}
+
 #[derive(Debug, Args)]
 struct DSOption {
     #[arg(long, help = "Store path")]
@@ -34,31 +40,28 @@ async fn main() -> Result<(), Error> {
     store
         .set(
             "json/korea",
-            serde_json::to_string(&JsonValue {
+            JsonValue {
                 name: "test0".into(),
                 score: 90,
-            })
-            .unwrap(),
+            },
         )
         .await?;
     store
         .set(
             "json/japan",
-            serde_json::to_string(&JsonValue {
+            JsonValue {
                 name: "test1".into(),
                 score: 70,
-            })
-            .unwrap(),
+            },
         )
         .await?;
     store
         .set(
             "json/china",
-            serde_json::to_string(&JsonValue {
+            JsonValue {
                 name: "test2".into(),
                 score: 85,
-            })
-            .unwrap(),
+            },
         )
         .await?;
 
