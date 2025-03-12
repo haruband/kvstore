@@ -17,6 +17,7 @@ async fn main() -> Result<(), Error> {
     let path = args.get_one::<String>("path").unwrap();
 
     let store = KVStore::try_new(&path).await?;
+    store.remove_recursive("simple").await?;
 
     store.set("simple/asia/korea", "apple").await?;
     store.set("simple/asia/japan", "mango").await?;
