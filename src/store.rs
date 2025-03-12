@@ -109,10 +109,10 @@ impl KVStore {
 
         let keys = self
             .store
-            .list_with_delimiter(Some(&Path::from_iter(parts)))
+            .list(Some(&Path::from_iter(parts)))
+            .try_collect::<Vec<_>>()
             .await?
-            .objects
-            .iter()
+            .into_iter()
             .map(|object| object.location.to_string())
             .collect::<Vec<_>>();
 
@@ -172,10 +172,10 @@ impl KVStore {
 
         Ok(self
             .store
-            .list_with_delimiter(Some(&Path::from_iter(parts)))
+            .list(Some(&Path::from_iter(parts)))
+            .try_collect::<Vec<_>>()
             .await?
-            .objects
-            .iter()
+            .into_iter()
             .map(|object| object.location.to_string())
             .collect())
     }

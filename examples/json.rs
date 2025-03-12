@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct JsonValue {
     pub name: String,
-    pub score: i64,
+    pub score: usize,
 }
 
 impl From<Vec<u8>> for JsonValue {
@@ -25,6 +25,12 @@ impl Into<Vec<u8>> for JsonValue {
 struct DSOption {
     #[arg(long, help = "Store path")]
     path: String,
+
+    #[arg(long, help = "Groups")]
+    groups: Option<usize>,
+
+    #[arg(long, help = "Items")]
+    items: Option<usize>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -34,36 +40,24 @@ async fn main() -> Result<(), Error> {
     let args = cmd.get_matches();
 
     let path = args.get_one::<String>("path").unwrap();
+    let groups = args.get_one::<usize>("groups").cloned().unwrap_or(3);
+    let items = args.get_one::<usize>("items").cloned().unwrap_or(4);
 
     let store = KVStore::try_new(&path).await?;
 
-    store
-        .set(
-            "json/korea",
-            JsonValue {
-                name: "test0".into(),
-                score: 90,
-            },
-        )
-        .await?;
-    store
-        .set(
-            "json/japan",
-            JsonValue {
-                name: "test1".into(),
-                score: 70,
-            },
-        )
-        .await?;
-    store
-        .set(
-            "json/china",
-            JsonValue {
-                name: "test2".into(),
-                score: 85,
-            },
-        )
-        .await?;
+    for group in 0..groups {
+        for item in 0..items {
+            store
+                .set(
+                    &format!("json/group{}/item{}", group, item),
+                    JsonValue {
+                        name: format!("item{}", item),
+                        score: group * item,
+                    },
+                )
+                .await?;
+        }
+    }
 
     let items = store.get_many::<JsonValue>(Some("json")).await?;
     println!("items={:#?}", items);
