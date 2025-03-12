@@ -146,6 +146,22 @@ impl KVStore {
 
         Ok(())
     }
+
+    pub async fn remove(&self, key: &str) -> Result<(), Error> {
+        self.store
+            .list(Some(&Path::from(self.url.join(key)?.path())))
+            .map(|object| async {
+                self.store.delete(&object?.location).await?;
+
+                Ok::<(), Error>(())
+            })
+            .boxed()
+            .buffer_unordered(num_cpus::get())
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "json")]
