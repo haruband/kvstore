@@ -18,9 +18,10 @@ async fn main() -> Result<(), Error> {
 
     let store = KVStore::try_new(&path).await?;
 
-    store.set("simple/korea", "apple").await?;
-    store.set("simple/japan", "mango").await?;
-    store.set("simple/china", "melon").await?;
+    store.set("simple/asia/korea", "apple").await?;
+    store.set("simple/asia/japan", "mango").await?;
+    store.set("simple/europe/england", "melon").await?;
+    store.set("simple/europe/france", "orange").await?;
 
     let items = store.list(Some("simple")).await?;
     println!("items={:#?}", items);
@@ -34,9 +35,14 @@ async fn main() -> Result<(), Error> {
             .collect::<Vec<_>>()
     );
 
-    store.rename("simple/korea", "simple/russia").await?;
+    store
+        .rename_recursive("simple/europe", "simple/asia")
+        .await?;
+    store
+        .rename("simple/asia/france", "simple/asia/italy")
+        .await?;
 
-    let item = store.get("simple/russia").await?;
+    let item = store.get("simple/asia/italy").await?;
     println!(
         "item={:?}",
         item.map(|item| String::from_utf8(item).unwrap())

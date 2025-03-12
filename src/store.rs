@@ -109,8 +109,7 @@ impl KVStore {
                         Err(err) => Err(err.into()),
                     }
                 })
-                .await
-                .unwrap()
+                .await?
             })
             .boxed()
             .buffer_unordered(num_cpus::get())
@@ -136,9 +135,30 @@ impl KVStore {
             .await?)
     }
 
+    pub async fn rename_recursive(&self, from: &str, to: &str) -> Result<(), Error> {
+        self.store
+            .list(Some(&Path::from(self.url.join(from)?.path())))
+            .map(|object| async {
+                let location0 = object?.location;
+                let path0 = location0.to_string();
+                let path1 = path0.replacen(from, to, 1);
+                let location1 = Path::from(path1);
+
+                self.store.rename(&location0, &location1).await?;
+
+                Ok::<(), Error>(())
+            })
+            .boxed()
+            .buffer_unordered(num_cpus::get())
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
         self.store
-            .rename_if_not_exists(
+            .rename(
                 &Path::from(self.url.join(from)?.path()),
                 &Path::from(self.url.join(to)?.path()),
             )
@@ -147,7 +167,7 @@ impl KVStore {
         Ok(())
     }
 
-    pub async fn remove(&self, key: &str) -> Result<(), Error> {
+    pub async fn remove_recursive(&self, key: &str) -> Result<(), Error> {
         self.store
             .list(Some(&Path::from(self.url.join(key)?.path())))
             .map(|object| async {
@@ -158,6 +178,14 @@ impl KVStore {
             .boxed()
             .buffer_unordered(num_cpus::get())
             .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove(&self, key: &str) -> Result<(), Error> {
+        self.store
+            .delete(&Path::from(self.url.join(key)?.path()))
             .await?;
 
         Ok(())
@@ -234,8 +262,7 @@ impl KVStore {
                         Err(err) => Err(err.into()),
                     }
                 })
-                .await
-                .unwrap()
+                .await?
             })
             .boxed()
             .buffer_unordered(num_cpus::get())
@@ -251,21 +278,21 @@ impl KVStore {
     pub async fn set_parquet(&self, key: &str, batches: Vec<RecordBatch>) -> Result<(), Error> {
         use parquet::arrow::AsyncArrowWriter;
 
-        let mut buffer = Vec::new();
-        let mut writer =
-            AsyncArrowWriter::try_new(&mut buffer, batches.first().unwrap().schema(), None)
-                .unwrap();
-        for batch in batches {
-            writer.write(&batch).await.unwrap();
-        }
-        writer.close().await.unwrap();
+        if let Some(batch) = batches.first() {
+            let mut buffer = Vec::new();
+            let mut writer = AsyncArrowWriter::try_new(&mut buffer, batch.schema(), None)?;
+            for batch in batches {
+                writer.write(&batch).await?;
+            }
+            writer.close().await?;
 
-        self.store
-            .put(
-                &Path::from(self.url.join(key)?.path()),
-                PutPayload::from(buffer),
-            )
-            .await?;
+            self.store
+                .put(
+                    &Path::from(self.url.join(key)?.path()),
+                    PutPayload::from(buffer),
+                )
+                .await?;
+        }
 
         Ok(())
     }
