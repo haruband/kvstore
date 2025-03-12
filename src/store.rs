@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Error};
+use futures::StreamExt;
+use futures::TryStreamExt;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::{ClientOptions, GetResultPayload, ObjectStore, PutPayload};
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use url::Url;
@@ -47,7 +50,7 @@ impl KVStore {
         })
     }
 
-    pub async fn set(&self, key: &str, value: &'static [u8]) -> Result<(), Error> {
+    pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
         self.store
             .put(
                 &Path::from_iter(
@@ -56,14 +59,14 @@ impl KVStore {
                         .map(|item| item.as_str())
                         .chain(key.split("/")),
                 ),
-                PutPayload::from_static(value),
+                PutPayload::from(value.into()),
             )
             .await?;
 
         Ok(())
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn get<T: From<Vec<u8>>>(&self, key: &str) -> Result<Option<T>, Error> {
         match self
             .store
             .get(&Path::from_iter(
@@ -77,16 +80,103 @@ impl KVStore {
             Ok(result) => match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
-                    Ok(Some(value.to_vec()))
+                    Ok(Some(value.to_vec().into()))
                 }
                 GetResultPayload::File(mut file, _) => {
                     let mut value = Vec::new();
                     file.read_to_end(&mut value)?;
-                    Ok(Some(value))
+                    Ok(Some(value.into()))
                 }
             },
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+
+    pub async fn get_many<T: From<Vec<u8>>>(
+        &self,
+        key: Option<&str>,
+    ) -> Result<HashMap<String, T>, Error> {
+        let parts: Vec<_> = if let Some(key) = key {
+            self.prefix
+                .iter()
+                .map(|item| item.as_str())
+                .chain(key.split("/"))
+                .collect()
+        } else {
+            self.prefix.iter().map(|item| item.as_str()).collect()
+        };
+
+        let keys = self
+            .store
+            .list_with_delimiter(Some(&Path::from_iter(parts)))
+            .await?
+            .objects
+            .iter()
+            .map(|object| object.location.to_string())
+            .collect::<Vec<_>>();
+
+        let values = futures::stream::iter(keys.clone())
+            .map(|key| async {
+                let store = self.store.clone();
+
+                tokio::task::spawn(async move {
+                    match store.get(&Path::from(key)).await {
+                        Ok(result) => match result.payload {
+                            GetResultPayload::Stream(_) => {
+                                let value = result.bytes().await?;
+                                Ok::<Option<Vec<u8>>, Error>(Some(value.to_vec()))
+                            }
+                            GetResultPayload::File(mut file, _) => {
+                                let mut value = Vec::new();
+                                file.read_to_end(&mut value)?;
+                                Ok(Some(value))
+                            }
+                        },
+                        Err(object_store::Error::NotFound { .. }) => Ok(None),
+                        Err(err) => Err(err.into()),
+                    }
+                })
+                .await
+                .unwrap()
+            })
+            .boxed()
+            .buffer_unordered(num_cpus::get())
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let mut items = HashMap::new();
+
+        for (key, value) in keys.into_iter().zip(values.into_iter()) {
+            match value {
+                Some(value) => {
+                    items.insert(key.into(), value.into());
+                }
+                None => {}
+            }
+        }
+
+        Ok(items)
+    }
+
+    pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
+        let parts: Vec<_> = if let Some(key) = key {
+            self.prefix
+                .iter()
+                .map(|item| item.as_str())
+                .chain(key.split("/"))
+                .collect()
+        } else {
+            self.prefix.iter().map(|item| item.as_str()).collect()
+        };
+
+        Ok(self
+            .store
+            .list_with_delimiter(Some(&Path::from_iter(parts)))
+            .await?
+            .objects
+            .iter()
+            .map(|object| object.location.to_string())
+            .collect())
     }
 }
