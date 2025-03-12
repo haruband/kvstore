@@ -145,6 +145,17 @@ impl KVStore {
             .try_collect::<Vec<_>>()
             .await?)
     }
+
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        self.store
+            .rename_if_not_exists(
+                &Path::from(self.url.join(from)?.path()),
+                &Path::from(self.url.join(to)?.path()),
+            )
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "parquet")]

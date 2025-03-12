@@ -34,7 +34,9 @@ async fn main() -> Result<(), Error> {
             .collect::<Vec<_>>()
     );
 
-    let value = store.get::<Vec<u8>>("simple/korea").await?;
+    store.rename("simple/korea", "simple/russia").await?;
+
+    let value = store.get::<Vec<u8>>("simple/russia").await?;
 
     println!(
         "value={:?}",
