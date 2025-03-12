@@ -17,17 +17,17 @@ async fn main() -> Result<(), Error> {
     let path = args.get_one::<String>("path").unwrap();
 
     let store = KVStore::try_new(&path).await?;
-    store.remove_recursive("simple").await?;
+    store.remove_recursive("/simple").await?;
 
-    store.set("simple/asia/korea", "apple").await?;
-    store.set("simple/asia/japan", "mango").await?;
-    store.set("simple/europe/england", "melon").await?;
-    store.set("simple/europe/france", "orange").await?;
+    store.set("/simple/asia/korea", "apple").await?;
+    store.set("/simple/asia/japan", "mango").await?;
+    store.set("/simple/europe/england", "melon").await?;
+    store.set("/simple/europe/france", "orange").await?;
 
-    let items = store.list(Some("simple")).await?;
+    let items = store.list(Some("/simple")).await?;
     println!("items={:#?}", items);
 
-    let items = store.get_many(Some("simple")).await?;
+    let items = store.get_many(Some("/simple")).await?;
     println!(
         "items={:#?}",
         items
@@ -36,14 +36,10 @@ async fn main() -> Result<(), Error> {
             .collect::<Vec<_>>()
     );
 
-    store
-        .rename_recursive("simple/europe", "simple/asia")
-        .await?;
-    store
-        .rename("simple/asia/france", "simple/asia/italy")
-        .await?;
+    store.rename_recursive("/simple/europe", "/europe").await?;
+    store.rename("/europe/france", "/europe/italy").await?;
 
-    let item = store.get("simple/asia/italy").await?;
+    let item = store.get("/europe/italy").await?;
     println!(
         "item={:?}",
         item.map(|item| String::from_utf8(item).unwrap())

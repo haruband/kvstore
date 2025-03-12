@@ -32,13 +32,13 @@ async fn main() -> Result<(), Error> {
     let items = args.get_one::<usize>("items").cloned().unwrap_or(4);
 
     let store = KVStore::try_new(&path).await?;
-    store.remove_recursive("json").await?;
+    store.remove_recursive("/json").await?;
 
     for group in 0..groups {
         for item in 0..items {
             store
                 .set_json(
-                    &format!("json/group{}/item{}", group, item),
+                    &format!("/json/group{}/item{}", group, item),
                     JsonValue {
                         name: format!("item{}", item),
                         score: group * item,
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Error> {
     }
 
     let values = store
-        .get_json_many::<JsonValue>(Some("json/group0"))
+        .get_json_many::<JsonValue>(Some("/json/group0"))
         .await?;
     println!("values={:#?}", values);
 

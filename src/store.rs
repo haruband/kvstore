@@ -12,7 +12,7 @@ use url::Url;
 
 pub struct KVStore {
     store: Arc<dyn ObjectStore>,
-    url: Url,
+    prefix: String,
 }
 
 impl KVStore {
@@ -44,13 +44,20 @@ impl KVStore {
             _ => return Err(anyhow!("invalid object store")),
         };
 
-        Ok(KVStore { store, url })
+        Ok(KVStore {
+            store,
+            prefix: url
+                .path()
+                .trim_start_matches(|c: char| c == '/')
+                .trim_end_matches(|c: char| c == '/')
+                .into(),
+        })
     }
 
     pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
         self.store
             .put(
-                &Path::from(self.url.join(key)?.path()),
+                &Path::from(format!("{}{}", self.prefix, key)),
                 PutPayload::from(value.into()),
             )
             .await?;
@@ -61,7 +68,7 @@ impl KVStore {
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         match self
             .store
-            .get(&Path::from(self.url.join(key)?.path()))
+            .get(&Path::from(format!("{}{}", self.prefix, key)))
             .await
         {
             Ok(result) => match result.payload {
@@ -81,14 +88,14 @@ impl KVStore {
     }
 
     pub async fn get_many(&self, key: Option<&str>) -> Result<Vec<Vec<u8>>, Error> {
-        let url = match key {
-            Some(key) => self.url.join(key)?,
-            None => self.url.clone(),
+        let path = match key {
+            Some(key) => format!("{}{}", self.prefix, key),
+            None => self.prefix.clone(),
         };
 
         let items = self
             .store
-            .list(Some(&Path::from(url.path())))
+            .list(Some(&Path::from(path)))
             .map(|object| async {
                 let object = object?;
                 let store = self.store.clone();
@@ -120,15 +127,22 @@ impl KVStore {
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
-        let url = match key {
-            Some(key) => self.url.join(key)?,
-            None => self.url.clone(),
+        let path = match key {
+            Some(key) => format!("{}{}", self.prefix, key),
+            None => self.prefix.clone(),
         };
 
         Ok(self
             .store
-            .list(Some(&Path::from(url.path())))
-            .map(|object| async { Ok::<String, Error>(object?.location.to_string()) })
+            .list(Some(&Path::from(path)))
+            .map(|object| async {
+                let path = object?.location.to_string();
+
+                Ok::<String, Error>(
+                    path.strip_prefix(&self.prefix)
+                        .map_or(path.clone(), |path| path.into()),
+                )
+            })
             .boxed()
             .buffer_unordered(num_cpus::get())
             .try_collect::<Vec<_>>()
@@ -137,14 +151,15 @@ impl KVStore {
 
     pub async fn rename_recursive(&self, from: &str, to: &str) -> Result<(), Error> {
         self.store
-            .list(Some(&Path::from(self.url.join(from)?.path())))
+            .list(Some(&Path::from(format!("{}{}", self.prefix, from))))
             .map(|object| async {
-                let location0 = object?.location;
-                let path0 = location0.to_string();
-                let path1 = path0.replacen(from, to, 1);
-                let location1 = Path::from(path1);
+                let path0 = object?.location;
+                let path1 = Path::from(path0.to_string().replace(
+                    &format!("{}{}", self.prefix, from),
+                    &format!("{}{}", self.prefix, to),
+                ));
 
-                self.store.rename(&location0, &location1).await?;
+                self.store.rename(&path0, &path1).await?;
 
                 Ok::<(), Error>(())
             })
@@ -159,8 +174,8 @@ impl KVStore {
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
         self.store
             .rename(
-                &Path::from(self.url.join(from)?.path()),
-                &Path::from(self.url.join(to)?.path()),
+                &Path::from(format!("{}{}", self.prefix, from)),
+                &Path::from(format!("{}{}", self.prefix, to)),
             )
             .await?;
 
@@ -169,7 +184,7 @@ impl KVStore {
 
     pub async fn remove_recursive(&self, key: &str) -> Result<(), Error> {
         self.store
-            .list(Some(&Path::from(self.url.join(key)?.path())))
+            .list(Some(&Path::from(format!("{}{}", self.prefix, key))))
             .map(|object| async {
                 self.store.delete(&object?.location).await?;
 
@@ -185,7 +200,7 @@ impl KVStore {
 
     pub async fn remove(&self, key: &str) -> Result<(), Error> {
         self.store
-            .delete(&Path::from(self.url.join(key)?.path()))
+            .delete(&Path::from(format!("{}{}", self.prefix, key)))
             .await?;
 
         Ok(())
@@ -197,7 +212,7 @@ impl KVStore {
     pub async fn set_json<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), Error> {
         self.store
             .put(
-                &Path::from(self.url.join(key)?.path()),
+                &Path::from(format!("{}/{}", self.prefix, key)),
                 PutPayload::from(serde_json::to_string(&value)?),
             )
             .await?;
@@ -211,7 +226,7 @@ impl KVStore {
     ) -> Result<Option<T>, Error> {
         match self
             .store
-            .get(&Path::from(self.url.join(key)?.path()))
+            .get(&Path::from(format!("{}{}", self.prefix, key)))
             .await
         {
             Ok(result) => match result.payload {
@@ -234,14 +249,14 @@ impl KVStore {
         &self,
         key: Option<&str>,
     ) -> Result<Vec<T>, Error> {
-        let url = match key {
-            Some(key) => self.url.join(key)?,
-            None => self.url.clone(),
+        let path = match key {
+            Some(key) => format!("{}{}", self.prefix, key),
+            None => self.prefix.clone(),
         };
 
         let items = self
             .store
-            .list(Some(&Path::from(url.path())))
+            .list(Some(&Path::from(path)))
             .map(|object| async {
                 let object = object?;
                 let store = self.store.clone();
@@ -288,7 +303,7 @@ impl KVStore {
 
             self.store
                 .put(
-                    &Path::from(self.url.join(key)?.path()),
+                    &Path::from(format!("{}{}", self.prefix, key)),
                     PutPayload::from(buffer),
                 )
                 .await?;
@@ -303,7 +318,7 @@ impl KVStore {
 
         match self
             .store
-            .get(&Path::from(self.url.join(key)?.path()))
+            .get(&Path::from(format!("{}{}", self.prefix, key)))
             .await
         {
             Ok(result) => match result.payload {

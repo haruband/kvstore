@@ -19,14 +19,14 @@ async fn main() -> Result<(), Error> {
     let path = args.get_one::<String>("path").unwrap();
 
     let store = KVStore::try_new(&path).await?;
-    store.remove_recursive("parquet").await?;
+    store.remove_recursive("/parquet").await?;
 
     let column = Arc::new(Int64Array::from_iter_values([1, 2, 3]));
     let batch = RecordBatch::try_from_iter([("column", column as ArrayRef)]).unwrap();
 
-    store.set_parquet("parquet/sample0", vec![batch]).await?;
+    store.set_parquet("/parquet/sample0", vec![batch]).await?;
 
-    let batches = store.get_parquet("parquet/sample0").await?;
+    let batches = store.get_parquet("/parquet/sample0").await?;
     println!("batches={:#?}", batches);
 
     Ok(())
