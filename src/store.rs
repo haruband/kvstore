@@ -55,22 +55,19 @@ impl KVStore {
     }
 
     pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
+        let key = format!("{}{}", self.prefix, key);
+
         self.store
-            .put(
-                &Path::from(format!("{}{}", self.prefix, key)),
-                PutPayload::from(value.into()),
-            )
+            .put(&Path::from(key), PutPayload::from(value.into()))
             .await?;
 
         Ok(())
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
-        match self
-            .store
-            .get(&Path::from(format!("{}{}", self.prefix, key)))
-            .await
-        {
+        let key = format!("{}{}", self.prefix, key);
+
+        match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
@@ -88,14 +85,14 @@ impl KVStore {
     }
 
     pub async fn get_many(&self, key: Option<&str>) -> Result<Vec<Vec<u8>>, Error> {
-        let path = match key {
+        let key = match key {
             Some(key) => format!("{}{}", self.prefix, key),
             None => self.prefix.clone(),
         };
 
         let items = self
             .store
-            .list(Some(&Path::from(path)))
+            .list(Some(&Path::from(key)))
             .map(|object| async {
                 let object = object?;
                 let store = self.store.clone();
@@ -127,14 +124,14 @@ impl KVStore {
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
-        let path = match key {
+        let key = match key {
             Some(key) => format!("{}{}", self.prefix, key),
             None => self.prefix.clone(),
         };
 
         Ok(self
             .store
-            .list(Some(&Path::from(path)))
+            .list(Some(&Path::from(key)))
             .map(|object| async {
                 let path = object?.location.to_string();
 
@@ -150,14 +147,14 @@ impl KVStore {
     }
 
     pub async fn rename_recursive(&self, from: &str, to: &str) -> Result<(), Error> {
+        let from = format!("{}{}", self.prefix, from);
+        let to = format!("{}{}", self.prefix, to);
+
         self.store
-            .list(Some(&Path::from(format!("{}{}", self.prefix, from))))
+            .list(Some(&Path::from(from.clone())))
             .map(|object| async {
                 let path0 = object?.location;
-                let path1 = Path::from(path0.to_string().replace(
-                    &format!("{}{}", self.prefix, from),
-                    &format!("{}{}", self.prefix, to),
-                ));
+                let path1 = Path::from(path0.to_string().replace(&from, &to));
 
                 self.store.rename(&path0, &path1).await?;
 
@@ -172,19 +169,21 @@ impl KVStore {
     }
 
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        let from = format!("{}{}", self.prefix, from);
+        let to = format!("{}{}", self.prefix, to);
+
         self.store
-            .rename(
-                &Path::from(format!("{}{}", self.prefix, from)),
-                &Path::from(format!("{}{}", self.prefix, to)),
-            )
+            .rename(&Path::from(from), &Path::from(to))
             .await?;
 
         Ok(())
     }
 
     pub async fn remove_recursive(&self, key: &str) -> Result<(), Error> {
+        let key = format!("{}{}", self.prefix, key);
+
         self.store
-            .list(Some(&Path::from(format!("{}{}", self.prefix, key))))
+            .list(Some(&Path::from(key)))
             .map(|object| async {
                 self.store.delete(&object?.location).await?;
 
@@ -199,9 +198,9 @@ impl KVStore {
     }
 
     pub async fn remove(&self, key: &str) -> Result<(), Error> {
-        self.store
-            .delete(&Path::from(format!("{}{}", self.prefix, key)))
-            .await?;
+        let key = format!("{}{}", self.prefix, key);
+
+        self.store.delete(&Path::from(key)).await?;
 
         Ok(())
     }
@@ -210,9 +209,11 @@ impl KVStore {
 #[cfg(feature = "json")]
 impl KVStore {
     pub async fn set_json<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), Error> {
+        let key = format!("{}{}", self.prefix, key);
+
         self.store
             .put(
-                &Path::from(format!("{}/{}", self.prefix, key)),
+                &Path::from(key),
                 PutPayload::from(serde_json::to_string(&value)?),
             )
             .await?;
@@ -224,11 +225,9 @@ impl KVStore {
         &self,
         key: &str,
     ) -> Result<Option<T>, Error> {
-        match self
-            .store
-            .get(&Path::from(format!("{}{}", self.prefix, key)))
-            .await
-        {
+        let key = format!("{}{}", self.prefix, key);
+
+        match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
@@ -249,14 +248,14 @@ impl KVStore {
         &self,
         key: Option<&str>,
     ) -> Result<Vec<T>, Error> {
-        let path = match key {
+        let key = match key {
             Some(key) => format!("{}{}", self.prefix, key),
             None => self.prefix.clone(),
         };
 
         let items = self
             .store
-            .list(Some(&Path::from(path)))
+            .list(Some(&Path::from(key)))
             .map(|object| async {
                 let object = object?;
                 let store = self.store.clone();
@@ -293,6 +292,8 @@ impl KVStore {
     pub async fn set_parquet(&self, key: &str, batches: Vec<RecordBatch>) -> Result<(), Error> {
         use parquet::arrow::AsyncArrowWriter;
 
+        let key = format!("{}{}", self.prefix, key);
+
         if let Some(batch) = batches.first() {
             let mut buffer = Vec::new();
             let mut writer = AsyncArrowWriter::try_new(&mut buffer, batch.schema(), None)?;
@@ -302,10 +303,7 @@ impl KVStore {
             writer.close().await?;
 
             self.store
-                .put(
-                    &Path::from(format!("{}{}", self.prefix, key)),
-                    PutPayload::from(buffer),
-                )
+                .put(&Path::from(key), PutPayload::from(buffer))
                 .await?;
         }
 
@@ -316,11 +314,9 @@ impl KVStore {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
         use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
-        match self
-            .store
-            .get(&Path::from(format!("{}{}", self.prefix, key)))
-            .await
-        {
+        let key = format!("{}{}", self.prefix, key);
+
+        match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
                 GetResultPayload::Stream(_) => {
                     let stream = ParquetRecordBatchReader::try_new(result.bytes().await?, 1024)?;
