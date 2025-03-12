@@ -12,7 +12,7 @@ use url::Url;
 
 pub struct KVStore {
     store: Arc<dyn ObjectStore>,
-    prefix: Vec<String>,
+    url: Url,
 }
 
 impl KVStore {
@@ -44,21 +44,13 @@ impl KVStore {
             _ => return Err(anyhow!("invalid object store")),
         };
 
-        Ok(KVStore {
-            store,
-            prefix: url.path().split("/").map(|item| item.to_string()).collect(),
-        })
+        Ok(KVStore { store, url })
     }
 
     pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
         self.store
             .put(
-                &Path::from_iter(
-                    self.prefix
-                        .iter()
-                        .map(|item| item.as_str())
-                        .chain(key.split("/")),
-                ),
+                &Path::from(self.url.join(key)?.path()),
                 PutPayload::from(value.into()),
             )
             .await?;
@@ -69,12 +61,7 @@ impl KVStore {
     pub async fn get<T: From<Vec<u8>>>(&self, key: &str) -> Result<Option<T>, Error> {
         match self
             .store
-            .get(&Path::from_iter(
-                self.prefix
-                    .iter()
-                    .map(|item| item.as_str())
-                    .chain(key.split("/")),
-            ))
+            .get(&Path::from(self.url.join(key)?.path()))
             .await
         {
             Ok(result) => match result.payload {
@@ -97,19 +84,14 @@ impl KVStore {
         &self,
         key: Option<&str>,
     ) -> Result<HashMap<String, T>, Error> {
-        let parts: Vec<_> = if let Some(key) = key {
-            self.prefix
-                .iter()
-                .map(|item| item.as_str())
-                .chain(key.split("/"))
-                .collect()
-        } else {
-            self.prefix.iter().map(|item| item.as_str()).collect()
+        let url = match key {
+            Some(key) => self.url.join(key)?,
+            None => self.url.clone(),
         };
 
         let items = self
             .store
-            .list(Some(&Path::from_iter(parts)))
+            .list(Some(&Path::from(url.path())))
             .map(|object| async {
                 let object = object?;
                 let store = self.store.clone();
@@ -145,19 +127,14 @@ impl KVStore {
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
-        let parts: Vec<_> = if let Some(key) = key {
-            self.prefix
-                .iter()
-                .map(|item| item.as_str())
-                .chain(key.split("/"))
-                .collect()
-        } else {
-            self.prefix.iter().map(|item| item.as_str()).collect()
+        let url = match key {
+            Some(key) => self.url.join(key)?,
+            None => self.url.clone(),
         };
 
         Ok(self
             .store
-            .list(Some(&Path::from_iter(parts)))
+            .list(Some(&Path::from(url.path())))
             .map(|object| async { Ok::<String, Error>(object?.location.to_string()) })
             .boxed()
             .buffer_unordered(num_cpus::get())
