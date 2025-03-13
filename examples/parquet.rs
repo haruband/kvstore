@@ -12,6 +12,8 @@ struct DSOption {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
+    env_logger::init();
+
     let cmd = Command::new("Parquet");
     let cmd = DSOption::augment_args(cmd);
     let args = cmd.get_matches();

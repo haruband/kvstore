@@ -44,18 +44,21 @@ impl KVStore {
             _ => return Err(anyhow!("invalid object store")),
         };
 
-        Ok(KVStore {
-            store,
-            prefix: url
-                .path()
-                .trim_start_matches(|c: char| c == '/')
-                .trim_end_matches(|c: char| c == '/')
-                .into(),
-        })
+        let prefix = url
+            .path()
+            .trim_start_matches(|c: char| c == '/')
+            .trim_end_matches(|c: char| c == '/')
+            .into();
+
+        log::debug!("base={:?}", prefix);
+
+        Ok(KVStore { store, prefix })
     }
 
     pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("set={:?}", key);
 
         self.store
             .put(&Path::from(key), PutPayload::from(value.into()))
@@ -66,6 +69,8 @@ impl KVStore {
 
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("get={:?}", key);
 
         match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
@@ -89,6 +94,8 @@ impl KVStore {
             Some(key) => format!("{}{}", self.prefix, key),
             None => self.prefix.clone(),
         };
+
+        log::debug!("get_many={:?}", key);
 
         let items = self
             .store
@@ -129,6 +136,8 @@ impl KVStore {
             None => self.prefix.clone(),
         };
 
+        log::debug!("list={:?}", key);
+
         Ok(self
             .store
             .list(Some(&Path::from(key)))
@@ -149,6 +158,8 @@ impl KVStore {
     pub async fn rename_many(&self, from: &str, to: &str) -> Result<(), Error> {
         let from = format!("{}{}", self.prefix, from);
         let to = format!("{}{}", self.prefix, to);
+
+        log::debug!("rename_many={:?}=={:?}", from, to);
 
         self.store
             .list(Some(&Path::from(from.clone())))
@@ -172,6 +183,8 @@ impl KVStore {
         let from = format!("{}{}", self.prefix, from);
         let to = format!("{}{}", self.prefix, to);
 
+        log::debug!("rename={:?}=={:?}", from, to);
+
         self.store
             .rename(&Path::from(from), &Path::from(to))
             .await?;
@@ -181,6 +194,8 @@ impl KVStore {
 
     pub async fn remove_many(&self, key: &str) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("remove_many={:?}", key);
 
         self.store
             .list(Some(&Path::from(key)))
@@ -200,6 +215,8 @@ impl KVStore {
     pub async fn remove(&self, key: &str) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
 
+        log::debug!("remove={:?}", key);
+
         self.store.delete(&Path::from(key)).await?;
 
         Ok(())
@@ -210,6 +227,8 @@ impl KVStore {
 impl KVStore {
     pub async fn set_json<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("set_json={:?}", key);
 
         self.store
             .put(
@@ -226,6 +245,8 @@ impl KVStore {
         key: &str,
     ) -> Result<Option<T>, Error> {
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("get_json={:?}", key);
 
         match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
@@ -252,6 +273,8 @@ impl KVStore {
             Some(key) => format!("{}{}", self.prefix, key),
             None => self.prefix.clone(),
         };
+
+        log::debug!("get_json_many={:?}", key);
 
         let items = self
             .store
@@ -294,6 +317,8 @@ impl KVStore {
 
         let key = format!("{}{}", self.prefix, key);
 
+        log::debug!("set_parquet={:?}", key);
+
         if let Some(batch) = batches.first() {
             let mut buffer = Vec::new();
             let mut writer = AsyncArrowWriter::try_new(&mut buffer, batch.schema(), None)?;
@@ -315,6 +340,8 @@ impl KVStore {
         use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
         let key = format!("{}{}", self.prefix, key);
+
+        log::debug!("get_parquet={:?}", key);
 
         match self.store.get(&Path::from(key)).await {
             Ok(result) => match result.payload {
