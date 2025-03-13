@@ -23,11 +23,11 @@ struct DSOption {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    env_logger::init();
-
     let cmd = Command::new("Json");
     let cmd = DSOption::augment_args(cmd);
     let args = cmd.get_matches();
+
+    env_logger::init();
 
     let path = args.get_one::<String>("path").unwrap();
     let groups = args.get_one::<usize>("groups").cloned().unwrap_or(3);

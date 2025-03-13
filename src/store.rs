@@ -13,6 +13,8 @@ use url::Url;
 pub struct KVStore {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+
+    parallelism: usize,
 }
 
 impl KVStore {
@@ -52,9 +54,20 @@ impl KVStore {
 
         log::debug!("base={:?}", prefix);
 
-        Ok(KVStore { store, prefix })
+        Ok(KVStore {
+            store,
+            prefix,
+            parallelism: num_cpus::get(),
+        })
     }
 
+    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = parallelism;
+        self
+    }
+}
+
+impl KVStore {
     pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
 
@@ -123,7 +136,7 @@ impl KVStore {
                 .await?
             })
             .boxed()
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(self.parallelism)
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -150,7 +163,7 @@ impl KVStore {
                 )
             })
             .boxed()
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(self.parallelism)
             .try_collect::<Vec<_>>()
             .await?)
     }
@@ -172,7 +185,7 @@ impl KVStore {
                 Ok::<(), Error>(())
             })
             .boxed()
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(self.parallelism)
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -205,7 +218,7 @@ impl KVStore {
                 Ok::<(), Error>(())
             })
             .boxed()
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(self.parallelism)
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -302,7 +315,7 @@ impl KVStore {
                 .await?
             })
             .boxed()
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(self.parallelism)
             .try_collect::<Vec<_>>()
             .await?;
 
