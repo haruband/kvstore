@@ -177,12 +177,20 @@ impl KVStore {
         self.store
             .list(Some(&Path::from(from.clone())))
             .map(|object| async {
-                let path0 = object?.location;
-                let path1 = Path::from(path0.to_string().replace(&from, &to));
+                let object = object?;
+                let store = self.store.clone();
+                let from = from.clone();
+                let to = to.clone();
 
-                self.store.rename(&path0, &path1).await?;
+                tokio::task::spawn(async move {
+                    let path0 = object.location;
+                    let path1 = Path::from(path0.to_string().replace(&from, &to));
 
-                Ok::<(), Error>(())
+                    store.rename(&path0, &path1).await?;
+
+                    Ok::<(), Error>(())
+                })
+                .await?
             })
             .boxed()
             .buffer_unordered(self.parallelism)
@@ -213,9 +221,15 @@ impl KVStore {
         self.store
             .list(Some(&Path::from(key)))
             .map(|object| async {
-                self.store.delete(&object?.location).await?;
+                let object = object?;
+                let store = self.store.clone();
 
-                Ok::<(), Error>(())
+                tokio::task::spawn(async move {
+                    store.delete(&object.location).await?;
+
+                    Ok::<(), Error>(())
+                })
+                .await?
             })
             .boxed()
             .buffer_unordered(self.parallelism)

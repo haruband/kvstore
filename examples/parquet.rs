@@ -5,7 +5,7 @@ use kvstore::KVStore;
 use std::sync::Arc;
 
 #[derive(Debug, Args)]
-struct DSOption {
+struct KVOption {
     #[arg(long, help = "Store path")]
     path: String,
 }
@@ -13,7 +13,7 @@ struct DSOption {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let cmd = Command::new("Parquet");
-    let cmd = DSOption::augment_args(cmd);
+    let cmd = KVOption::augment_args(cmd);
     let args = cmd.get_matches();
 
     env_logger::init();
