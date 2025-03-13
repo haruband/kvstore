@@ -146,7 +146,7 @@ impl KVStore {
             .await?)
     }
 
-    pub async fn rename_recursive(&self, from: &str, to: &str) -> Result<(), Error> {
+    pub async fn rename_many(&self, from: &str, to: &str) -> Result<(), Error> {
         let from = format!("{}{}", self.prefix, from);
         let to = format!("{}{}", self.prefix, to);
 
@@ -179,7 +179,7 @@ impl KVStore {
         Ok(())
     }
 
-    pub async fn remove_recursive(&self, key: &str) -> Result<(), Error> {
+    pub async fn remove_many(&self, key: &str) -> Result<(), Error> {
         let key = format!("{}{}", self.prefix, key);
 
         self.store

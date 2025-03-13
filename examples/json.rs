@@ -32,7 +32,7 @@ async fn main() -> Result<(), Error> {
     let items = args.get_one::<usize>("items").cloned().unwrap_or(4);
 
     let store = KVStore::try_new(&path).await?;
-    store.remove_recursive("/json").await?;
+    store.remove_many("/json").await?;
 
     for group in 0..groups {
         for item in 0..items {

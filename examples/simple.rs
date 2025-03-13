@@ -17,7 +17,7 @@ async fn main() -> Result<(), Error> {
     let path = args.get_one::<String>("path").unwrap();
 
     let store = KVStore::try_new(&path).await?;
-    store.remove_recursive("/simple").await?;
+    store.remove_many("/simple").await?;
 
     store.set("/simple/asia/korea", "apple").await?;
     store.set("/simple/asia/japan", "mango").await?;
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Error> {
             .collect::<Vec<_>>()
     );
 
-    store.rename_recursive("/simple/europe", "/europe").await?;
+    store.rename_many("/simple/europe", "/europe").await?;
     store.rename("/europe/france", "/europe/italy").await?;
 
     let item = store.get("/europe/italy").await?;
