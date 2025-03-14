@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Error};
-use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
@@ -114,26 +113,20 @@ impl KVStore {
             .store
             .list(Some(&Path::from(key)))
             .map(|object| async {
-                let object = object?;
-                let store = self.store.clone();
-
-                tokio::task::spawn(async move {
-                    match store.get(&object.location).await {
-                        Ok(result) => match result.payload {
-                            GetResultPayload::Stream(_) => {
-                                let value = result.bytes().await?;
-                                Ok::<Vec<u8>, Error>(value.to_vec())
-                            }
-                            GetResultPayload::File(mut file, _) => {
-                                let mut value = Vec::new();
-                                file.read_to_end(&mut value)?;
-                                Ok(value)
-                            }
-                        },
-                        Err(err) => Err(err.into()),
-                    }
-                })
-                .await?
+                match self.store.get(&object?.location).await {
+                    Ok(result) => match result.payload {
+                        GetResultPayload::Stream(_) => {
+                            let value = result.bytes().await?;
+                            Ok::<Vec<u8>, Error>(value.to_vec())
+                        }
+                        GetResultPayload::File(mut file, _) => {
+                            let mut value = Vec::new();
+                            file.read_to_end(&mut value)?;
+                            Ok(value)
+                        }
+                    },
+                    Err(err) => Err(err.into()),
+                }
             })
             .boxed()
             .buffer_unordered(self.parallelism)
@@ -177,20 +170,12 @@ impl KVStore {
         self.store
             .list(Some(&Path::from(from.clone())))
             .map(|object| async {
-                let object = object?;
-                let store = self.store.clone();
-                let from = from.clone();
-                let to = to.clone();
+                let path0 = object?.location;
+                let path1 = Path::from(path0.to_string().replace(&from, &to));
 
-                tokio::task::spawn(async move {
-                    let path0 = object.location;
-                    let path1 = Path::from(path0.to_string().replace(&from, &to));
+                self.store.rename(&path0, &path1).await?;
 
-                    store.rename(&path0, &path1).await?;
-
-                    Ok::<(), Error>(())
-                })
-                .await?
+                Ok::<(), Error>(())
             })
             .boxed()
             .buffer_unordered(self.parallelism)
@@ -221,15 +206,9 @@ impl KVStore {
         self.store
             .list(Some(&Path::from(key)))
             .map(|object| async {
-                let object = object?;
-                let store = self.store.clone();
+                self.store.delete(&object?.location).await?;
 
-                tokio::task::spawn(async move {
-                    store.delete(&object.location).await?;
-
-                    Ok::<(), Error>(())
-                })
-                .await?
+                Ok::<(), Error>(())
             })
             .boxed()
             .buffer_unordered(self.parallelism)
@@ -307,26 +286,20 @@ impl KVStore {
             .store
             .list(Some(&Path::from(key)))
             .map(|object| async {
-                let object = object?;
-                let store = self.store.clone();
-
-                tokio::task::spawn(async move {
-                    match store.get(&object.location).await {
-                        Ok(result) => match result.payload {
-                            GetResultPayload::Stream(_) => {
-                                let value = result.bytes().await?;
-                                Ok::<T, Error>(serde_json::from_slice(&value)?)
-                            }
-                            GetResultPayload::File(mut file, _) => {
-                                let mut value = Vec::new();
-                                file.read_to_end(&mut value)?;
-                                Ok(serde_json::from_slice(&value)?)
-                            }
-                        },
-                        Err(err) => Err(err.into()),
-                    }
-                })
-                .await?
+                match self.store.get(&object?.location).await {
+                    Ok(result) => match result.payload {
+                        GetResultPayload::Stream(_) => {
+                            let value = result.bytes().await?;
+                            Ok::<T, Error>(serde_json::from_slice(&value)?)
+                        }
+                        GetResultPayload::File(mut file, _) => {
+                            let mut value = Vec::new();
+                            file.read_to_end(&mut value)?;
+                            Ok(serde_json::from_slice(&value)?)
+                        }
+                    },
+                    Err(err) => Err(err.into()),
+                }
             })
             .boxed()
             .buffer_unordered(self.parallelism)
@@ -339,7 +312,11 @@ impl KVStore {
 
 #[cfg(feature = "parquet")]
 impl KVStore {
-    pub async fn set_parquet(&self, key: &str, batches: Vec<RecordBatch>) -> Result<(), Error> {
+    pub async fn set_parquet(
+        &self,
+        key: &str,
+        batches: Vec<arrow::record_batch::RecordBatch>,
+    ) -> Result<(), Error> {
         use parquet::arrow::AsyncArrowWriter;
 
         let key = format!("{}{}", self.prefix, key);
@@ -362,7 +339,10 @@ impl KVStore {
         Ok(())
     }
 
-    pub async fn get_parquet(&self, key: &str) -> Result<Option<Vec<RecordBatch>>, Error> {
+    pub async fn get_parquet(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<arrow::record_batch::RecordBatch>>, Error> {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
         use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
