@@ -146,21 +146,36 @@ impl KVStore {
 
         log::debug!("list={:?}", key);
 
-        Ok(self
-            .store
-            .list(Some(&Path::from(key)))
-            .map(|object| async {
-                let path = object?.location.to_string();
+        if self.prefix.is_empty() {
+            Ok(self
+                .store
+                .list(Some(&Path::from(key)))
+                .map(|object| async {
+                    let path = object?.location.to_string();
 
-                Ok::<String, Error>(
-                    path.strip_prefix(&self.prefix)
-                        .map_or(path.clone(), |path| path.into()),
-                )
-            })
-            .boxed()
-            .buffer_unordered(self.parallelism)
-            .try_collect::<Vec<_>>()
-            .await?)
+                    Ok::<String, Error>(format!("/{}", path))
+                })
+                .boxed()
+                .buffer_unordered(self.parallelism)
+                .try_collect::<Vec<_>>()
+                .await?)
+        } else {
+            Ok(self
+                .store
+                .list(Some(&Path::from(key)))
+                .map(|object| async {
+                    let path = object?.location.to_string();
+
+                    Ok::<String, Error>(
+                        path.strip_prefix(&self.prefix)
+                            .map_or(path.clone(), |path| path.into()),
+                    )
+                })
+                .boxed()
+                .buffer_unordered(self.parallelism)
+                .try_collect::<Vec<_>>()
+                .await?)
+        }
     }
 
     pub async fn rename_many(&self, from: &str, to: &str) -> Result<(), Error> {
@@ -395,7 +410,11 @@ mod tests {
         let items = store.list(Some("/test")).await.unwrap();
         assert_eq!(
             items,
-            vec!["test/group0/key0", "test/group0/key1", "test/group0/key2"]
+            vec![
+                "/test/group0/key0",
+                "/test/group0/key1",
+                "/test/group0/key2"
+            ]
         )
     }
 }
