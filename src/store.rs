@@ -3,6 +3,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
+use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ClientOptions, GetResultPayload, ObjectStore, PutPayload};
 use std::io::Read;
@@ -42,6 +43,7 @@ impl KVStore {
                 Arc::new(s3)
             }
             "file" => Arc::new(LocalFileSystem::default()),
+            "memory" => Arc::new(InMemory::default()),
             _ => return Err(anyhow!("invalid object store")),
         };
 
@@ -369,5 +371,31 @@ impl KVStore {
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_simple() {
+        let store = KVStore::try_new("memory://").await.unwrap();
+
+        store.set("/test/group0/key0", "value0").await.unwrap();
+        store.set("/test/group0/key1", "value1").await.unwrap();
+        store.set("/test/group0/key2", "value2").await.unwrap();
+
+        let item = store.get("/test/group0/key0").await.unwrap();
+        assert_eq!(item, Some("value0".as_bytes().to_vec()));
+
+        let item = store.get("/test/group0/key1").await.unwrap();
+        assert_eq!(item, Some("value1".as_bytes().to_vec()));
+
+        let items = store.list(Some("/test")).await.unwrap();
+        assert_eq!(
+            items,
+            vec!["test/group0/key0", "test/group0/key1", "test/group0/key2"]
+        )
     }
 }
