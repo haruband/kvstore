@@ -47,5 +47,7 @@ async fn main() -> Result<(), Error> {
         item.map(|item| String::from_utf8(item).unwrap())
     );
 
+    store.remove_many("/").await?;
+
     Ok(())
 }

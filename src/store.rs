@@ -179,25 +179,47 @@ impl KVStore {
     }
 
     pub async fn rename_many(&self, from: &str, to: &str) -> Result<(), Error> {
-        let from = format!("{}{}", self.prefix, from);
-        let to = format!("{}{}", self.prefix, to);
+        if self.prefix.is_empty() {
+            let from = from.trim_start_matches(|c: char| c == '/').to_string();
+            let to = to.trim_start_matches(|c: char| c == '/').to_string();
 
-        log::debug!("rename_many={:?}=={:?}", from, to);
+            log::debug!("rename_many={:?}=={:?}", from, to);
 
-        self.store
-            .list(Some(&Path::from(from.clone())))
-            .map(|object| async {
-                let path0 = object?.location;
-                let path1 = Path::from(path0.to_string().replace(&from, &to));
+            self.store
+                .list(Some(&Path::from(from.clone())))
+                .map(|object| async {
+                    let path0 = object?.location;
+                    let path1 = Path::from(path0.to_string().replace(&from, &to));
 
-                self.store.rename(&path0, &path1).await?;
+                    self.store.rename(&path0, &path1).await?;
 
-                Ok::<(), Error>(())
-            })
-            .boxed()
-            .buffer_unordered(self.parallelism)
-            .try_collect::<Vec<_>>()
-            .await?;
+                    Ok::<(), Error>(())
+                })
+                .boxed()
+                .buffer_unordered(self.parallelism)
+                .try_collect::<Vec<_>>()
+                .await?;
+        } else {
+            let from = format!("{}{}", self.prefix, from);
+            let to = format!("{}{}", self.prefix, to);
+
+            log::debug!("rename_many={:?}=={:?}", from, to);
+
+            self.store
+                .list(Some(&Path::from(from.clone())))
+                .map(|object| async {
+                    let path0 = object?.location;
+                    let path1 = Path::from(path0.to_string().replace(&from, &to));
+
+                    self.store.rename(&path0, &path1).await?;
+
+                    Ok::<(), Error>(())
+                })
+                .boxed()
+                .buffer_unordered(self.parallelism)
+                .try_collect::<Vec<_>>()
+                .await?;
+        }
 
         Ok(())
     }
