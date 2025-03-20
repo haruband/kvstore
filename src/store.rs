@@ -103,41 +103,6 @@ impl KVStore {
         }
     }
 
-    pub async fn get_many(&self, key: Option<&str>) -> Result<Vec<Vec<u8>>, Error> {
-        let key = match key {
-            Some(key) => format!("{}{}", self.prefix, key),
-            None => self.prefix.clone(),
-        };
-
-        log::debug!("get_many={:?}", key);
-
-        let items = self
-            .store
-            .list(Some(&Path::from(key)))
-            .map(|object| async {
-                match self.store.get(&object?.location).await {
-                    Ok(result) => match result.payload {
-                        GetResultPayload::Stream(_) => {
-                            let value = result.bytes().await?;
-                            Ok::<Vec<u8>, Error>(value.to_vec())
-                        }
-                        GetResultPayload::File(mut file, _) => {
-                            let mut value = Vec::new();
-                            file.read_to_end(&mut value)?;
-                            Ok(value)
-                        }
-                    },
-                    Err(err) => Err(err.into()),
-                }
-            })
-            .boxed()
-            .buffer_unordered(self.parallelism)
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        Ok(items)
-    }
-
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
         let key = match key {
             Some(key) => format!("{}{}", self.prefix, key),
@@ -308,44 +273,6 @@ impl KVStore {
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(err) => Err(err.into()),
         }
-    }
-
-    pub async fn get_json_many<T: Send + 'static + serde::de::DeserializeOwned>(
-        &self,
-        key: Option<&str>,
-    ) -> Result<Vec<T>, Error> {
-        let key = match key {
-            Some(key) => format!("{}{}", self.prefix, key),
-            None => self.prefix.clone(),
-        };
-
-        log::debug!("get_json_many={:?}", key);
-
-        let items = self
-            .store
-            .list(Some(&Path::from(key)))
-            .map(|object| async {
-                match self.store.get(&object?.location).await {
-                    Ok(result) => match result.payload {
-                        GetResultPayload::Stream(_) => {
-                            let value = result.bytes().await?;
-                            Ok::<T, Error>(serde_json::from_slice(&value)?)
-                        }
-                        GetResultPayload::File(mut file, _) => {
-                            let mut value = Vec::new();
-                            file.read_to_end(&mut value)?;
-                            Ok(serde_json::from_slice(&value)?)
-                        }
-                    },
-                    Err(err) => Err(err.into()),
-                }
-            })
-            .boxed()
-            .buffer_unordered(self.parallelism)
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        Ok(items)
     }
 }
 

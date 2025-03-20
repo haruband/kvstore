@@ -29,15 +29,6 @@ async fn main() -> Result<(), Error> {
     let items = store.list(Some("/simple")).await?;
     println!("items={:#?}", items);
 
-    let items = store.get_many(Some("/simple")).await?;
-    println!(
-        "items={:#?}",
-        items
-            .iter()
-            .map(|item| String::from_utf8(item.clone()).unwrap())
-            .collect::<Vec<_>>()
-    );
-
     store.rename_many("/simple/europe", "/europe").await?;
     store.rename("/europe/france", "/europe/italy").await?;
 

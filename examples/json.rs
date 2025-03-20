@@ -50,10 +50,8 @@ async fn main() -> Result<(), Error> {
         }
     }
 
-    let values = store
-        .get_json_many::<JsonValue>(Some("/json/group0"))
-        .await?;
-    println!("values={:#?}", values);
+    let value = store.get_json::<JsonValue>("/json/group0/item0").await?;
+    println!("value={:#?}", value);
 
     Ok(())
 }
