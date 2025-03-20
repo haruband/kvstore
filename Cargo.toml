@@ -10,6 +10,7 @@ url = "2.3"
 num_cpus = "1.13.0"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio = { version = "1", features = ["full"] }
+moka = { version = "0.12", features = ["sync"] }
 object_store = { version = "0.12", features = ["aws"] }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

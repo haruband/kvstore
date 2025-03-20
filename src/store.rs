@@ -1,18 +1,32 @@
 use anyhow::{anyhow, Error};
+use arrow::datatypes::Schema;
+use futures::Future;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use moka::sync::Cache;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::{ClientOptions, GetResultPayload, ObjectStore, PutPayload};
+use object_store::{
+    ClientOptions, GetOptions, GetResult, GetResultPayload, ObjectStore, PutPayload,
+};
+use std::any::Any;
 use std::io::Read;
 use std::sync::Arc;
 use url::Url;
 
+#[derive(Debug, Clone)]
+struct KVEntry {
+    tag: String,
+    value: Arc<dyn Any + Send + Sync>,
+}
+
 pub struct KVStore {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+
+    caches: Cache<String, KVEntry>,
 
     parallelism: usize,
 }
@@ -58,6 +72,7 @@ impl KVStore {
         Ok(KVStore {
             store,
             prefix,
+            caches: Cache::builder().build(),
             parallelism: num_cpus::get(),
         })
     }
@@ -69,38 +84,141 @@ impl KVStore {
 }
 
 impl KVStore {
-    pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
+    async fn set_inner<T: Clone + std::marker::Send + std::marker::Sync + 'static, F, R>(
+        &self,
+        key: &str,
+        value: T,
+        encode: F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(T) -> R,
+        R: Future<Output = Result<PutPayload, Error>>,
+    {
         let key = format!("{}{}", self.prefix, key);
 
         log::debug!("set={:?}", key);
 
-        self.store
-            .put(&Path::from(key), PutPayload::from(value.into()))
+        let result = self
+            .store
+            .put(&Path::from(key.clone()), encode(value.clone()).await?)
             .await?;
+
+        if let Some(tag) = result.e_tag {
+            self.caches.insert(
+                key,
+                KVEntry {
+                    tag: tag,
+                    value: Arc::new(value),
+                },
+            );
+        }
 
         Ok(())
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    async fn get_inner<T: Clone + std::marker::Send + std::marker::Sync + 'static, F, R>(
+        &self,
+        key: &str,
+        decode: F,
+    ) -> Result<Option<T>, Error>
+    where
+        F: Fn(GetResult) -> R,
+        R: Future<Output = Result<T, Error>>,
+    {
         let key = format!("{}{}", self.prefix, key);
 
         log::debug!("get={:?}", key);
 
-        match self.store.get(&Path::from(key)).await {
-            Ok(result) => match result.payload {
+        match self.caches.get(&key) {
+            Some(entry) => match self
+                .store
+                .get_opts(
+                    &Path::from(key.clone()),
+                    GetOptions {
+                        if_none_match: Some(entry.tag.clone()),
+                        ..GetOptions::default()
+                    },
+                )
+                .await
+            {
+                Ok(result) => {
+                    let meta = result.meta.clone();
+
+                    let value = decode(result).await?;
+
+                    if let Some(tag) = meta.e_tag {
+                        self.caches.insert(
+                            key,
+                            KVEntry {
+                                tag: tag,
+                                value: Arc::new(value.clone()),
+                            },
+                        );
+                    }
+
+                    Ok(Some(value))
+                }
+                Err(object_store::Error::NotModified { .. }) => {
+                    log::debug!("cached={:?}", key);
+
+                    match entry.value.downcast_ref::<T>().cloned() {
+                        value @ Some(_) => Ok(value),
+                        None => Ok(None),
+                    }
+                }
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(err) => Err(err.into()),
+            },
+            None => match self.store.get(&Path::from(key.clone())).await {
+                Ok(result) => {
+                    let meta = result.meta.clone();
+
+                    let value = decode(result).await?;
+
+                    if let Some(tag) = meta.e_tag {
+                        self.caches.insert(
+                            key,
+                            KVEntry {
+                                tag: tag,
+                                value: Arc::new(value.clone()),
+                            },
+                        );
+                    }
+
+                    Ok(Some(value))
+                }
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(err) => Err(err.into()),
+            },
+        }
+    }
+
+    pub async fn set(&self, key: &str, value: impl Into<Vec<u8>>) -> Result<(), Error> {
+        self.set_inner(
+            key,
+            value.into(),
+            async |value: Vec<u8>| -> Result<PutPayload, Error> { Ok(PutPayload::from(value)) },
+        )
+        .await
+    }
+
+    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        self.get_inner(key, async |result: GetResult| -> Result<Vec<u8>, Error> {
+            let value = match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
-                    Ok(Some(value.to_vec()))
+                    value.to_vec()
                 }
                 GetResultPayload::File(mut file, _) => {
                     let mut value = Vec::new();
                     file.read_to_end(&mut value)?;
-                    Ok(Some(value))
+                    value
                 }
-            },
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+            };
+
+            Ok(value)
+        })
+        .await
     }
 
     pub async fn list(&self, key: Option<&str>) -> Result<Vec<String>, Error> {
@@ -235,44 +353,41 @@ impl KVStore {
 
 #[cfg(feature = "json")]
 impl KVStore {
-    pub async fn set_json<T: serde::Serialize>(&self, key: &str, value: T) -> Result<(), Error> {
-        let key = format!("{}{}", self.prefix, key);
-
-        log::debug!("set_json={:?}", key);
-
-        self.store
-            .put(
-                &Path::from(key),
-                PutPayload::from(serde_json::to_string(&value)?),
-            )
-            .await?;
-
-        Ok(())
+    pub async fn set_json<
+        T: serde::Serialize + Clone + std::marker::Send + std::marker::Sync + 'static,
+    >(
+        &self,
+        key: &str,
+        value: T,
+    ) -> Result<(), Error> {
+        self.set_inner(key, value, async |value: T| -> Result<PutPayload, Error> {
+            Ok(PutPayload::from(serde_json::to_string(&value)?))
+        })
+        .await
     }
 
-    pub async fn get_json<T: serde::de::DeserializeOwned>(
+    pub async fn get_json<
+        T: serde::de::DeserializeOwned + Clone + std::marker::Send + std::marker::Sync + 'static,
+    >(
         &self,
         key: &str,
     ) -> Result<Option<T>, Error> {
-        let key = format!("{}{}", self.prefix, key);
-
-        log::debug!("get_json={:?}", key);
-
-        match self.store.get(&Path::from(key)).await {
-            Ok(result) => match result.payload {
+        self.get_inner(key, async |result: GetResult| -> Result<T, Error> {
+            let value = match result.payload {
                 GetResultPayload::Stream(_) => {
                     let value = result.bytes().await?;
-                    Ok(Some(serde_json::from_slice(&value)?))
+                    serde_json::from_slice(&value)?
                 }
                 GetResultPayload::File(mut file, _) => {
                     let mut value = Vec::new();
                     file.read_to_end(&mut value)?;
-                    Ok(Some(serde_json::from_slice(&value)?))
+                    serde_json::from_slice(&value)?
                 }
-            },
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+            };
+
+            Ok(value)
+        })
+        .await
     }
 }
 
@@ -285,24 +400,27 @@ impl KVStore {
     ) -> Result<(), Error> {
         use parquet::arrow::AsyncArrowWriter;
 
-        let key = format!("{}{}", self.prefix, key);
+        self.set_inner(
+            key,
+            batches,
+            async |batches: Vec<arrow::record_batch::RecordBatch>| -> Result<PutPayload, Error> {
+                let mut buffer = Vec::new();
+                let mut writer = AsyncArrowWriter::try_new(
+                    &mut buffer,
+                    batches
+                        .first()
+                        .map_or(Arc::new(Schema::empty()), |batch| batch.schema()),
+                    None,
+                )?;
+                for batch in batches {
+                    writer.write(&batch).await?;
+                }
+                writer.close().await?;
 
-        log::debug!("set_parquet={:?}", key);
-
-        if let Some(batch) = batches.first() {
-            let mut buffer = Vec::new();
-            let mut writer = AsyncArrowWriter::try_new(&mut buffer, batch.schema(), None)?;
-            for batch in batches {
-                writer.write(&batch).await?;
-            }
-            writer.close().await?;
-
-            self.store
-                .put(&Path::from(key), PutPayload::from(buffer))
-                .await?;
-        }
-
-        Ok(())
+                Ok(PutPayload::from(buffer))
+            },
+        )
+        .await
     }
 
     pub async fn get_parquet(
@@ -312,29 +430,30 @@ impl KVStore {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
         use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
-        let key = format!("{}{}", self.prefix, key);
+        self.get_inner(
+            key,
+            async |result: GetResult| -> Result<Vec<arrow::record_batch::RecordBatch>, Error> {
+                let batches = match result.payload {
+                    GetResultPayload::Stream(_) => {
+                        let stream =
+                            ParquetRecordBatchReader::try_new(result.bytes().await?, 1024)?;
+                        let batches = stream.flatten().collect::<Vec<_>>();
+                        batches
+                    }
+                    GetResultPayload::File(file, _) => {
+                        let builder =
+                            ParquetRecordBatchStreamBuilder::new(tokio::fs::File::from_std(file))
+                                .await?;
+                        let stream = builder.build()?;
+                        let batches = stream.try_collect::<Vec<_>>().await?;
+                        batches
+                    }
+                };
 
-        log::debug!("get_parquet={:?}", key);
-
-        match self.store.get(&Path::from(key)).await {
-            Ok(result) => match result.payload {
-                GetResultPayload::Stream(_) => {
-                    let stream = ParquetRecordBatchReader::try_new(result.bytes().await?, 1024)?;
-                    let batches = stream.flatten().collect::<Vec<_>>();
-                    Ok(Some(batches))
-                }
-                GetResultPayload::File(file, _) => {
-                    let builder =
-                        ParquetRecordBatchStreamBuilder::new(tokio::fs::File::from_std(file))
-                            .await?;
-                    let stream = builder.build()?;
-                    let batches = stream.try_collect::<Vec<_>>().await?;
-                    Ok(Some(batches))
-                }
+                Ok(batches)
             },
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+        )
+        .await
     }
 }
 
