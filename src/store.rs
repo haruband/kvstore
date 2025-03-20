@@ -102,7 +102,6 @@ impl KVStore {
             .store
             .put(&Path::from(key.clone()), encode(value.clone()).await?)
             .await?;
-
         if let Some(tag) = result.e_tag {
             self.caches.insert(
                 key,
@@ -142,11 +141,9 @@ impl KVStore {
                 .await
             {
                 Ok(result) => {
-                    let meta = result.meta.clone();
-
+                    let object = result.meta.clone();
                     let value = decode(result).await?;
-
-                    if let Some(tag) = meta.e_tag {
+                    if let Some(tag) = object.e_tag {
                         self.caches.insert(
                             key,
                             KVEntry {
@@ -159,11 +156,31 @@ impl KVStore {
                     Ok(Some(value))
                 }
                 Err(object_store::Error::NotModified { .. }) => {
-                    log::debug!("cached={:?}", key);
-
                     match entry.value.downcast_ref::<T>().cloned() {
-                        value @ Some(_) => Ok(value),
-                        None => Ok(None),
+                        value @ Some(_) => {
+                            log::debug!("cached={:?}", key);
+
+                            Ok(value)
+                        }
+                        None => match self.store.get(&Path::from(key.clone())).await {
+                            Ok(result) => {
+                                let object = result.meta.clone();
+                                let value = decode(result).await?;
+                                if let Some(tag) = object.e_tag {
+                                    self.caches.insert(
+                                        key,
+                                        KVEntry {
+                                            tag: tag,
+                                            value: Arc::new(value.clone()),
+                                        },
+                                    );
+                                }
+
+                                Ok(Some(value))
+                            }
+                            Err(object_store::Error::NotFound { .. }) => Ok(None),
+                            Err(err) => Err(err.into()),
+                        },
                     }
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -171,11 +188,9 @@ impl KVStore {
             },
             None => match self.store.get(&Path::from(key.clone())).await {
                 Ok(result) => {
-                    let meta = result.meta.clone();
-
+                    let object = result.meta.clone();
                     let value = decode(result).await?;
-
-                    if let Some(tag) = meta.e_tag {
+                    if let Some(tag) = object.e_tag {
                         self.caches.insert(
                             key,
                             KVEntry {
