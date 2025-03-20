@@ -1,3 +1,3 @@
 mod store;
 
-pub use store::KVStore;
+pub use store::{KVStore, KVStoreBuilder};

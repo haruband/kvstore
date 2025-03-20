@@ -1,6 +1,6 @@
 use anyhow::Error;
 use clap::{Args, Command};
-use kvstore::KVStore;
+use kvstore::KVStoreBuilder;
 
 #[derive(Debug, Args)]
 struct KVOption {
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Error> {
 
     let path = args.get_one::<String>("path").unwrap();
 
-    let store = KVStore::try_new(&path).await?;
+    let store = KVStoreBuilder::new().build(&path).await?;
     store.remove_many("/simple").await?;
 
     store.set("/simple/asia/korea", "apple").await?;

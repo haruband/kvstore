@@ -14,6 +14,7 @@ use object_store::{
 use std::any::Any;
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Duration;
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -22,22 +23,48 @@ struct KVEntry {
     value: Arc<dyn Any + Send + Sync>,
 }
 
-pub struct KVStore {
-    store: Arc<dyn ObjectStore>,
-    prefix: String,
-
-    caches: Cache<String, KVEntry>,
-
-    parallelism: usize,
+pub struct KVStoreBuilder {
+    max_capacity: Option<u64>,
+    time_to_live: Option<Duration>,
+    parallelism: Option<usize>,
 }
 
-impl KVStore {
-    pub async fn try_new(path: &str) -> Result<Self, Error> {
-        let url = match Url::parse(&path) {
+impl Default for KVStoreBuilder {
+    fn default() -> Self {
+        Self {
+            max_capacity: None,
+            time_to_live: None,
+            parallelism: None,
+        }
+    }
+}
+
+impl KVStoreBuilder {
+    pub fn new() -> Self {
+        KVStoreBuilder::default()
+    }
+
+    pub fn with_max_capacity(mut self, max_capacity: u64) -> Self {
+        self.max_capacity = Some(max_capacity);
+        self
+    }
+
+    pub fn with_time_to_live(mut self, time_to_live: Duration) -> Self {
+        self.time_to_live = Some(time_to_live);
+        self
+    }
+
+    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = Some(parallelism);
+        self
+    }
+
+    pub async fn build(self, path: &str) -> Result<KVStore, Error> {
+        let url = match Url::parse(path) {
             Ok(url) => url,
             Err(url::ParseError::RelativeUrlWithoutBase) => {
-                std::fs::create_dir_all(&path)?;
-                Url::from_directory_path(std::fs::canonicalize(&path)?)
+                std::fs::create_dir_all(path)?;
+                Url::from_directory_path(std::fs::canonicalize(path)?)
                     .map_err(|err| anyhow!("invalid path: {:?}", err))?
             }
             Err(err) => return Err(err.into()),
@@ -69,18 +96,31 @@ impl KVStore {
 
         log::debug!("base={:?}", prefix);
 
+        let mut builder = Cache::<String, KVEntry>::builder();
+        builder = builder.max_capacity(self.max_capacity.unwrap_or(100));
+        if let Some(time_to_live) = self.time_to_live {
+            builder = builder.time_to_live(time_to_live);
+        }
+        let caches = builder.build();
+
+        let parallelism = self.parallelism.unwrap_or(num_cpus::get());
+
         Ok(KVStore {
             store,
             prefix,
-            caches: Cache::builder().build(),
-            parallelism: num_cpus::get(),
+            caches,
+            parallelism,
         })
     }
+}
 
-    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
-        self.parallelism = parallelism;
-        self
-    }
+pub struct KVStore {
+    store: Arc<dyn ObjectStore>,
+    prefix: String,
+
+    caches: Cache<String, KVEntry>,
+
+    parallelism: usize,
 }
 
 impl KVStore {
@@ -478,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple() {
-        let store = KVStore::try_new("memory://").await.unwrap();
+        let store = KVStoreBuilder::new().build("memory://").await.unwrap();
 
         store.set("/test/group0/key0", "value0").await.unwrap();
         store.set("/test/group0/key1", "value1").await.unwrap();

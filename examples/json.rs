@@ -1,6 +1,6 @@
 use anyhow::Error;
 use clap::{Args, Command};
-use kvstore::KVStore;
+use kvstore::KVStoreBuilder;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Error> {
     let groups = args.get_one::<usize>("groups").cloned().unwrap_or(3);
     let items = args.get_one::<usize>("items").cloned().unwrap_or(4);
 
-    let store = KVStore::try_new(&path).await?;
+    let store = KVStoreBuilder::new().build(&path).await?;
     store.remove_many("/json").await?;
 
     for group in 0..groups {

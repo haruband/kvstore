@@ -1,7 +1,7 @@
 use anyhow::Error;
 use arrow::array::{ArrayRef, Int64Array, RecordBatch};
 use clap::{Args, Command};
-use kvstore::KVStore;
+use kvstore::KVStoreBuilder;
 use std::sync::Arc;
 
 #[derive(Debug, Args)]
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Error> {
 
     let path = args.get_one::<String>("path").unwrap();
 
-    let store = KVStore::try_new(&path).await?;
+    let store = KVStoreBuilder::new().build(&path).await?;
     store.remove_many("/parquet").await?;
 
     let column = Arc::new(Int64Array::from_iter_values([1, 2, 3]));
