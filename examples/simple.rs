@@ -46,6 +46,18 @@ async fn main() -> Result<(), Error> {
         "item={:?}",
         item.map(|item| String::from_utf8(item).unwrap())
     );
+    let item = store.get("/europe/italy").await?;
+    println!(
+        "item={:?}",
+        item.map(|item| String::from_utf8(item).unwrap())
+    );
+
+    store.set("/europe/italy", "kiwi").await?;
+    let item = store.get("/europe/italy").await?;
+    println!(
+        "item={:?}",
+        item.map(|item| String::from_utf8(item).unwrap())
+    );
 
     store.remove_many("/").await?;
 
