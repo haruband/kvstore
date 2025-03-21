@@ -48,10 +48,6 @@ fn main() {
 
 For more detailed examples, refer to the [`examples`](https://github.com/haruband/kvstore/tree/main/examples) directory.
 
-## Documentation
-
-Comprehensive documentation is available on [docs.rs](https://docs.rs/kvstore). It includes detailed descriptions of the API, usage patterns, and advanced configurations.
-
 ## Contributing
 
 Contributions are welcome! Please follow these steps:
