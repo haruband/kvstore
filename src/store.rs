@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Error};
 use arrow::datatypes::Schema;
-use futures::Future;
-use futures::StreamExt;
-use futures::TryStreamExt;
+use futures::{Future, StreamExt, TryStreamExt};
 use moka::sync::Cache;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
@@ -26,7 +24,8 @@ struct KVEntry {
 pub struct KVStoreBuilder {
     max_capacity: Option<u64>,
     time_to_live: Option<Duration>,
-    parallelism: Option<usize>,
+    parallelism: usize,
+    enable_caching: bool,
 }
 
 impl Default for KVStoreBuilder {
@@ -34,7 +33,8 @@ impl Default for KVStoreBuilder {
         Self {
             max_capacity: None,
             time_to_live: None,
-            parallelism: None,
+            parallelism: num_cpus::get(),
+            enable_caching: false,
         }
     }
 }
@@ -55,7 +55,12 @@ impl KVStoreBuilder {
     }
 
     pub fn with_parallelism(mut self, parallelism: usize) -> Self {
-        self.parallelism = Some(parallelism);
+        self.parallelism = parallelism;
+        self
+    }
+
+    pub fn with_caching(mut self) -> Self {
+        self.enable_caching = true;
         self
     }
 
@@ -103,13 +108,12 @@ impl KVStoreBuilder {
         }
         let caches = builder.build();
 
-        let parallelism = self.parallelism.unwrap_or(num_cpus::get());
-
         Ok(KVStore {
             store,
             prefix,
             caches,
-            parallelism,
+            parallelism: self.parallelism,
+            enable_caching: self.enable_caching,
         })
     }
 }
@@ -121,6 +125,7 @@ pub struct KVStore {
     caches: Cache<String, KVEntry>,
 
     parallelism: usize,
+    enable_caching: bool,
 }
 
 impl KVStore {
@@ -168,34 +173,26 @@ impl KVStore {
 
         log::debug!("get={:?}", key);
 
-        match self.caches.get(&key) {
-            Some(entry) => match self
-                .store
-                .get_opts(
-                    &Path::from(key.clone()),
-                    GetOptions {
-                        if_none_match: Some(entry.tag.clone()),
-                        ..GetOptions::default()
-                    },
-                )
-                .await
-            {
-                Ok(result) => {
-                    let object = result.meta.clone();
-                    let value = decode(result).await?;
-                    if let Some(tag) = object.e_tag {
-                        self.caches.insert(
-                            key,
-                            KVEntry {
-                                tag: tag,
-                                value: Arc::new(value.clone()),
-                            },
-                        );
-                    }
-
-                    Ok(Some(value))
+        macro_rules! decode_and_update {
+            ($result:expr) => {{
+                let object = $result.meta.clone();
+                let value = decode($result).await?;
+                if let Some(tag) = object.e_tag {
+                    self.caches.insert(
+                        key,
+                        KVEntry {
+                            tag: tag,
+                            value: Arc::new(value.clone()),
+                        },
+                    );
                 }
-                Err(object_store::Error::NotModified { .. }) => {
+                value
+            }};
+        }
+
+        match self.caches.get(&key) {
+            Some(entry) => {
+                if self.enable_caching {
                     match entry.value.downcast_ref::<T>().cloned() {
                         value @ Some(_) => {
                             log::debug!("cached={:?}", key);
@@ -203,45 +200,45 @@ impl KVStore {
                             Ok(value)
                         }
                         None => match self.store.get(&Path::from(key.clone())).await {
-                            Ok(result) => {
-                                let object = result.meta.clone();
-                                let value = decode(result).await?;
-                                if let Some(tag) = object.e_tag {
-                                    self.caches.insert(
-                                        key,
-                                        KVEntry {
-                                            tag: tag,
-                                            value: Arc::new(value.clone()),
-                                        },
-                                    );
-                                }
-
-                                Ok(Some(value))
-                            }
+                            Ok(result) => Ok(Some(decode_and_update!(result))),
                             Err(object_store::Error::NotFound { .. }) => Ok(None),
                             Err(err) => Err(err.into()),
                         },
                     }
-                }
-                Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(err) => Err(err.into()),
-            },
-            None => match self.store.get(&Path::from(key.clone())).await {
-                Ok(result) => {
-                    let object = result.meta.clone();
-                    let value = decode(result).await?;
-                    if let Some(tag) = object.e_tag {
-                        self.caches.insert(
-                            key,
-                            KVEntry {
-                                tag: tag,
-                                value: Arc::new(value.clone()),
+                } else {
+                    match self
+                        .store
+                        .get_opts(
+                            &Path::from(key.clone()),
+                            GetOptions {
+                                if_none_match: Some(entry.tag.clone()),
+                                ..GetOptions::default()
                             },
-                        );
-                    }
+                        )
+                        .await
+                    {
+                        Ok(result) => Ok(Some(decode_and_update!(result))),
+                        Err(object_store::Error::NotModified { .. }) => {
+                            match entry.value.downcast_ref::<T>().cloned() {
+                                value @ Some(_) => {
+                                    log::debug!("unmodified={:?}", key);
 
-                    Ok(Some(value))
+                                    Ok(value)
+                                }
+                                None => match self.store.get(&Path::from(key.clone())).await {
+                                    Ok(result) => Ok(Some(decode_and_update!(result))),
+                                    Err(object_store::Error::NotFound { .. }) => Ok(None),
+                                    Err(err) => Err(err.into()),
+                                },
+                            }
+                        }
+                        Err(object_store::Error::NotFound { .. }) => Ok(None),
+                        Err(err) => Err(err.into()),
+                    }
                 }
+            }
+            None => match self.store.get(&Path::from(key.clone())).await {
+                Ok(result) => Ok(Some(decode_and_update!(result))),
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
                 Err(err) => Err(err.into()),
             },

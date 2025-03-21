@@ -33,7 +33,7 @@ async fn main() -> Result<(), Error> {
     let groups = args.get_one::<usize>("groups").cloned().unwrap_or(3);
     let items = args.get_one::<usize>("items").cloned().unwrap_or(4);
 
-    let store = KVStoreBuilder::new().build(&path).await?;
+    let store = KVStoreBuilder::new().with_caching().build(&path).await?;
     store.remove_many("/json").await?;
 
     for group in 0..groups {
@@ -52,6 +52,12 @@ async fn main() -> Result<(), Error> {
 
     let value = store.get_json::<JsonValue>("/json/group0/item0").await?;
     println!("value={:#?}", value);
+
+    let value = store.get("/json/group0/item0").await?;
+    println!(
+        "value={:#?}",
+        value.map(|value| String::from_utf8(value).unwrap())
+    );
 
     Ok(())
 }
